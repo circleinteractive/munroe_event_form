@@ -1,0 +1,327 @@
+<?php
+
+/**
+ * Module to provide a custom CiviCRM event signup form
+ * @author andyw@circle, 27/08/2014
+ */
+
+define('MUNROE_SPOUSE_RELATIONSHIP_TYPE_ID', 2);
+
+/**
+ * Implementation of hook_civicrm_config
+ */
+function munroe_event_form_civicrm_config(&$config) {
+    
+    # initialize template path
+    $templates = &CRM_Core_Smarty::singleton()->template_dir;
+    
+    if (!is_array($templates))
+        $templates = array($templates);
+    
+    array_unshift($templates, __DIR__ . '/civicrm_templates');
+
+}
+
+/**
+ * Implementation of hook_menu
+ */
+function munroe_event_form_menu() {
+
+    # registration page
+    $items['event-registration'] = array(
+        'title'            => t('Event Registration'),
+        'page callback'    => 'drupal_get_form',
+        'file'             => 'form.registration.inc',
+        'page arguments'   => array('munroe_event_form'),
+        'access arguments' => array('access event signup form'),
+        'type'             => MENU_NORMAL_ITEM
+    );
+
+    # confirmation page
+    $items['event-registration/confirm'] = array(
+        'title'            => t('Confirmation'),
+        'page callback'    => 'drupal_get_form',
+        'file'             => 'form.confirmation.inc',
+        'page arguments'   => array('munroe_event_form_confirmation'),
+        'access arguments' => array('access event signup form'),
+        'type'             => MENU_NORMAL_ITEM
+    );
+
+    return $items;
+
+}
+
+/**
+ * Implementation of hook_permission
+ */
+function munroe_event_form_permission() {
+    
+    return array(
+        'access event signup form' => array(
+            'title'       => t('Access event signup form'),
+            'description' => t('Can access the event signup form provided by the module'),
+        )
+    );
+
+}
+
+/**
+ * Implementation of hook_theme
+ */
+function munroe_event_form_theme() {
+
+    return array(
+        'munroe_event_table' => array(
+            'template'  => 'event-table',
+            'path'      => drupal_get_path('module', 'munroe_event_form') . '/drupal_templates',
+            'arguments' => array()
+        )
+    );
+
+}
+
+/**
+ * Get the CiviCRM contact id for the currently logged in user
+ */
+function _munroe_event_form_get_current_contact_id() {
+    
+    global $user;
+    civicrm_initialize();
+
+    try {
+
+        $contact_id = civicrm_api3('UFMatch', 'getvalue', array(
+            'uf_id'  => $user->uid,
+            'return' => 'contact_id'
+        ));
+
+    } catch (CiviCRM_API3_Exception $e) { 
+        drupal_set_message("Error getting contact id for uid @uid: @excuse", array(
+            '@uid'    => $user->uid,
+            '@excuse' => $e->getMessage()
+        ));
+        return 0;
+    }
+
+    if (!$contact_id) {
+        drupal_set_message("Unable to find matching contact id for uid @uid", array(
+            '@uid' => $user->uid
+        ));
+        return 0;
+    }
+
+    return (int)$contact_id;
+
+}
+
+/**
+ * Utility function to populate events
+ * @return array  an array of event titles / dates keyed by event id
+ */
+function _munroe_event_form_get_events() {
+    
+    civicrm_initialize();
+
+    $dao = CRM_Core_DAO::executeQuery("
+        SELECT id, title, start_date FROM civicrm_event 
+         WHERE is_active 
+           AND is_public
+           AND registration_start_date <= NOW()
+           AND registration_end_date >= NOW()
+      ORDER BY start_date
+    ");
+
+    while ($dao->fetch())
+        $events[$dao->id] = sprintf('%s - %s', 
+            $dao->title, 
+            date('F jS, Y g:i A', strtotime($dao->start_date))
+        );
+
+    return $events;
+
+}
+
+/**
+ * Utility function to get Civi entity by id
+ * @param  string $entity  the entity to query
+ * @param  int    $id      the id of the entity
+ * @return array
+ */
+function _munroe_event_form_get_event($id) {
+
+    civicrm_initialize();
+
+    try {
+
+        $event = civicrm_api3('event', 'getsingle', array(
+            'id'  => $id
+        ));
+
+    } catch (CiviCRM_API3_Exception $e) { 
+        return (array)watchdog(basename(__DIR__), "Error loading event details for event id @id: @excuse", array(
+            '@id'     => $id,
+            '@excuse' => $e->getMessage()
+        ));
+    }
+
+    if ($event['is_show_location'] and isset($event['loc_block_id']) and !empty($event['loc_block_id'])) {
+        
+        # first query loc_block details
+        try {
+
+            $loc_block = civicrm_api3('loc_block', 'getsingle', array(
+                'id'  => $event['loc_block_id']
+            ));
+
+        } catch (CiviCRM_API3_Exception $e) { 
+            return (array)watchdog(basename(__DIR__), "Error loading location details for event id @id: @excuse", array(
+                '@id'     => $id,
+                '@excuse' => $e->getMessage()
+            ));
+        }
+
+        # from that, query address, email and phone
+        try {
+
+            $event['location']['address'] = civicrm_api3('address', 'getsingle', array(
+                'id'  => $loc_block['address_id']
+            ));
+
+        } catch (CiviCRM_API3_Exception $e) { 
+            return (array)watchdog(basename(__DIR__), "Error loading address details for event id @id: @excuse", array(
+                '@id'     => $id,
+                '@excuse' => $e->getMessage()
+            ));
+        }       
+
+        try {
+
+            $event['location']['email'] = civicrm_api3('email', 'getsingle', array(
+                'id'  => $loc_block['email_id']
+            ));
+
+        } catch (CiviCRM_API3_Exception $e) { 
+            return (array)watchdog(basename(__DIR__), "Error loading email details for event id @id: @excuse", array(
+                '@id'     => $id,
+                '@excuse' => $e->getMessage()
+            ));
+        }  
+
+        try {
+
+            $event['location']['phone'] = civicrm_api3('phone', 'getsingle', array(
+                'id'  => $loc_block['phone_id']
+            ));
+
+        } catch (CiviCRM_API3_Exception $e) { 
+            return (array)watchdog(basename(__DIR__), "Error loading phone details for event id @id: @excuse", array(
+                '@id'     => $id,
+                '@excuse' => $e->getMessage()
+            ));
+        } 
+
+    }
+
+    return $event;
+
+}
+
+/**
+ * Utility function to get contact details of the currently logged in user
+ * @return array
+ */
+function _munroe_event_form_get_you() {
+
+    civicrm_initialize();
+
+    $contact_id = _munroe_event_form_get_current_contact_id();
+
+    try {
+
+        return civicrm_api3('contact', 'getsingle', array(
+            'id'  => $contact_id
+        ));
+
+    } catch (CiviCRM_API3_Exception $e) { 
+        drupal_set_message("Error loading contact details for contact id @cid: @excuse", array(
+            '@cid'    => $contact_id,
+            '@excuse' => $e->getMessage()
+        ));
+        return array();
+    }
+
+}
+
+/**
+ * Utility function to get spouse details of the currently logged in user
+ * @return array
+ */
+function _munroe_event_form_get_your_spouse() {
+
+    civicrm_initialize();
+
+    $contact_id = _munroe_event_form_get_current_contact_id();
+
+    $params = array(
+        1 => array($contact_id, 'Positive'),
+        2 => array(MUNROE_SPOUSE_RELATIONSHIP_TYPE_ID, 'Positive')
+    );
+
+    $spouse_contact_id = CRM_Core_DAO::singleValueQuery("
+        SELECT contact_id_b FROM civicrm_relationship
+         WHERE contact_id_a = %1 AND relationship_type_id = %2 AND is_active
+    ", $params) or 
+    $spouse_contact_id = CRM_Core_DAO::singleValueQuery("
+        SELECT contact_id_a FROM civicrm_relationship
+         WHERE contact_id_b = %1 AND relationship_type_id = %2 AND is_active
+    ", $params); 
+    
+    if (!$spouse_contact_id)
+        return array();
+
+    try {
+        return civicrm_api3('contact', 'getsingle', array(
+            'id'          => $spouse_contact_id,
+            'is_deceased' => 0
+        ));
+    } catch (CiviCRM_API3_Exception $e) { 
+        return array();
+    }    
+
+}
+
+/**
+ * Return an array of fully loaded event arrays from a passed in set of checkbox options
+ * or an empty array if unsuccessful
+ * @param  array $checkbox_options  an array of checkbox options from $form_state['values']
+ * @return array
+ */
+function _munroe_event_form_load_events($checkbox_options) {
+    
+    if (!is_array($checkbox_options))
+        return array();
+
+    $results = array();
+
+    foreach ($checkbox_options as $option) {
+        
+        # zero if unselected
+        if (!$option)
+            continue;
+        
+        # event id if selected
+        try {
+            $results[] = civicrm_api3('event', 'getsingle', array(
+                'id' => $option
+            ));
+        } catch (CiviCRM_API3_Exception $e) { 
+            drupal_set_message('An error occurred loading event info', 'error');
+            return array();
+        }        
+
+    }
+
+    return $results;
+
+}
+

@@ -1,0 +1,6 @@
+name = Munroe Event Form
+description = Custom replacement for Webform CiviCRM event signup
+package = Circle
+core = 7.x
+version = 7.x-1.0
+dependencies[] = civicrm
